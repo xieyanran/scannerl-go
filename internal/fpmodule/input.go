@@ -37,6 +37,12 @@ type Input struct {
 	// ["true"] for "-m httpbg:true".
 	Args []string
 
+	// MaxPkt is the run's configured max-packet-per-round cap (Config.MaxPkt,
+	// itself defaulted from Module.DefaultConfig unless overridden by -j),
+	// handed to the module so it can cap the NumPackets it requests on a
+	// Continue step.
+	MaxPkt int
+
 	// PacketRcv/Data describe ONLY the most recent Continue round's
 	// response, not bytes accumulated across the whole probe. PacketRcv
 	// < 1 after a wait means the round timed out.
