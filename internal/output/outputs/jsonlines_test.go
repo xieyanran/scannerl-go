@@ -10,9 +10,9 @@ import (
 	"github.com/xieyanran/scannerl-go/internal/output"
 )
 
-// plainStringer has no MarshalText, only String, exercising jsonValue's
-// fmt.Stringer fallback (as opposed to the encoding.TextMarshaler path
-// netip.Addr takes).
+// plainStringer has no MarshalText, only String, exercising
+// output.NormalizeValue's fmt.Stringer fallback (as opposed to the
+// encoding.TextMarshaler path netip.Addr takes).
 type plainStringer struct{}
 
 func (plainStringer) String() string { return "plain" }

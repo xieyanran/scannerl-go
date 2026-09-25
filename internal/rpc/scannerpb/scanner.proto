@@ -1,0 +1,70 @@
+// Wire contract between a scannerl Coordinator and its Workers
+// (Milestone 2: distributed mode). See internal/coordinator and
+// internal/worker for the Go implementations either side of this.
+syntax = "proto3";
+
+package scannerl;
+
+option go_package = "github.com/xieyanran/scannerl-go/internal/rpc/scannerpb";
+
+// Target mirrors internal/target.Target field-for-field.
+message Target {
+  string host = 1;
+  int32 port = 2;
+  bool is_domain = 3;
+  repeated string arg = 4;
+}
+
+// Outcome mirrors internal/fpmodule.Outcome. OUTCOME_UNSPECIFIED is
+// proto3's mandatory zero value; it is never produced by a well-formed
+// conversion, so its presence on the wire signals a missing/corrupt
+// field rather than aliasing OUTCOME_OK.
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  OUTCOME_OK = 1;
+  OUTCOME_ERROR_UP = 2;
+  OUTCOME_ERROR_UNKNOWN = 3;
+}
+
+// Result mirrors internal/output.Record, with its embedded
+// fpmodule.Result flattened in (matching internal/output/outputs
+// jsonlines.go's jsonRecord shape). Result.Value (documented as one of:
+// string, bool, []string, []any, or fmt.Stringer/netip.Addr) is
+// JSON-encoded into value_json rather than modeled as a oneof/Any, so the
+// wire schema doesn't need to change as module Value shapes evolve. An
+// empty value_json means a nil Value.
+message Result {
+  string module = 1;
+  string target = 2;
+  int32 port = 3;
+  Outcome outcome = 4;
+  string value_json = 5;
+}
+
+// WorkerHello identifies a worker connecting for its target shard. It is
+// not used to decide shard assignment (arrival order does that); it's
+// carried only for the coordinator's own logging/diagnostics.
+message WorkerHello {
+  string worker_id = 1;
+}
+
+// ReportAck is ReportResults' single response, sent once after the
+// worker's result stream closes.
+message ReportAck {
+  int64 received = 1;
+}
+
+service Scanner {
+  // GetTargets is called once per worker on connect. The coordinator
+  // blocks the response until exactly -workers WorkerHello calls have
+  // arrived, computes even shares, streams this worker's shard down as
+  // individual Target messages, then closes the stream. No dynamic
+  // rebalancing happens after that: it is a one-time, static push.
+  rpc GetTargets(WorkerHello) returns (stream Target);
+
+  // ReportResults: the worker streams one Result per finished probe as
+  // it's produced. The coordinator reads until the worker closes the
+  // stream (feeding every Result into its own output.Sink along the
+  // way), then returns one ReportAck.
+  rpc ReportResults(stream Result) returns (ReportAck);
+}
