@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/xieyanran/scannerl-go/internal/engine"
 	"github.com/xieyanran/scannerl-go/internal/fpmodule"
@@ -17,7 +18,7 @@ import (
 // named output. This is today's (Milestone 1) behavior, run when -role
 // is unset -- the whole run happens on this one process, no Coordinator
 // or Worker involved.
-func runSingleHost(ctx context.Context, mod fpmodule.Module, modCfg fpmodule.Config, moduleName, outputName string, srcCfg target.SourceConfig, workers int) error {
+func runSingleHost(ctx context.Context, mod fpmodule.Module, modCfg fpmodule.Config, moduleName, outputName string, srcCfg target.SourceConfig, workers, connectRetries int, connectBackoff time.Duration) error {
 	out, ok := output.New(outputName)
 	if !ok {
 		return fmt.Errorf("unknown output %q (available: %v)", outputName, output.Names())
@@ -38,12 +39,14 @@ func runSingleHost(ctx context.Context, mod fpmodule.Module, modCfg fpmodule.Con
 	})
 
 	eng := engine.New(engine.Config{
-		Module:     mod,
-		ModuleName: moduleName,
-		Transport:  modCfg.Transport,
-		Timeout:    modCfg.Timeout,
-		MaxPkt:     modCfg.MaxPkt,
-		Workers:    workers,
+		Module:         mod,
+		ModuleName:     moduleName,
+		Transport:      modCfg.Transport,
+		Timeout:        modCfg.Timeout,
+		MaxPkt:         modCfg.MaxPkt,
+		Workers:        workers,
+		ConnectRetries: connectRetries,
+		ConnectBackoff: connectBackoff,
 	}, sink)
 
 	eng.Run(ctx, targets) // blocks until targets is closed or ctx is done

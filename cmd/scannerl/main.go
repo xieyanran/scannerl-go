@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/xieyanran/scannerl-go/internal/fpmodule"
 	"github.com/xieyanran/scannerl-go/internal/output"
@@ -42,8 +43,13 @@ func run() error {
 		role        = flag.String("role", "", `run mode: "" (single-host, default), "coordinator", or "worker"`)
 		numWorkers  = flag.Int("workers", 0, "coordinator: number of workers to wait for before pushing shards")
 		listenAddr  = flag.String("listen", ":9090", "coordinator: gRPC listen address")
+		registerTO  = flag.Duration("register-timeout", 0, "coordinator: abort if fewer than -workers connect within this long (0 = wait forever)")
 		connectAddr = flag.String("connect", "", "worker: coordinator address to dial")
 		workerID    = flag.String("worker-id", "", "worker: identifier reported to the coordinator (default: hostname)")
+
+		connectRetries = flag.Int("connect-retries", 2, "extra CONNECT attempts after a dial failure, with backoff (0 disables)")
+		connectBackoff = flag.Duration("connect-backoff", 250*time.Millisecond, "delay before the first connect retry, doubling each attempt")
+		maxDuration    = flag.Duration("max-duration", 0, "overall scan deadline bounding the whole run, not just per-connection timeouts (0 = unlimited)")
 	)
 	flag.Parse()
 
@@ -68,15 +74,25 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// An optional overall deadline, bounding the whole run end to end --
+	// distinct from modCfg.Timeout, which only bounds a single
+	// dial/read/write. Applies to every role, alongside the
+	// signal-based cancellation above.
+	if *maxDuration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *maxDuration)
+		defer cancel()
+	}
+
 	switch *role {
 	case "":
-		return runSingleHost(ctx, mod, modCfg, *moduleName, *outputName, buildSourceConfig(*targetsCSV, *targetFile, modCfg.Port), *workers)
+		return runSingleHost(ctx, mod, modCfg, *moduleName, *outputName, buildSourceConfig(*targetsCSV, *targetFile, modCfg.Port), *workers, *connectRetries, *connectBackoff)
 
 	case "coordinator":
 		if *numWorkers <= 0 {
 			return fmt.Errorf("-role coordinator requires -workers > 0")
 		}
-		return runCoordinator(ctx, *moduleName, modCfg, *outputName, buildSourceConfig(*targetsCSV, *targetFile, modCfg.Port), *numWorkers, *listenAddr)
+		return runCoordinator(ctx, *moduleName, modCfg, *outputName, buildSourceConfig(*targetsCSV, *targetFile, modCfg.Port), *numWorkers, *listenAddr, *registerTO)
 
 	case "worker":
 		if *connectAddr == "" {
@@ -94,7 +110,7 @@ func run() error {
 				id = h
 			}
 		}
-		return runWorker(ctx, mod, modCfg, *moduleName, *connectAddr, id, *workers)
+		return runWorker(ctx, mod, modCfg, *moduleName, *connectAddr, id, *workers, *connectRetries, *connectBackoff)
 
 	default:
 		return fmt.Errorf(`unknown -role %q (want "", "coordinator", or "worker")`, *role)

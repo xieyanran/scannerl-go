@@ -68,6 +68,37 @@ follow-up (verifying this concern's real-world impact on actual
 multi-host infrastructure is tracked separately from the milestone that
 introduced distributed mode).
 
+## Fault tolerance
+
+A few knobs bound how much a scan can be derailed by an unreliable network,
+a slow-to-start Worker, or a bad module:
+
+- **`-connect-retries` / `-connect-backoff`** (default: 2 retries, 250ms
+  backoff doubling each attempt): a momentary network blip or briefly
+  overloaded target gets a few more CONNECT attempts before that target is
+  classified as unreachable. This is separate from the original's `-r`
+  retry budget, which only ever governs resending within an
+  already-established connection, never the dial step itself.
+- **`-max-duration`** (default: unlimited): bounds the whole scan end to
+  end, on top of (not instead of) each module's own per-connection
+  timeout — useful when a target list is dominated by slow/timing-out
+  hosts and a scan needs to stop after N minutes regardless of what's left.
+- **`-register-timeout`** (coordinator role only; default: wait forever):
+  if fewer than `-workers` connect within this long, the coordinator
+  aborts with a clear error instead of listening forever for a Worker that
+  never shows up (crashed on boot, firewall/security-group
+  misconfiguration, ...).
+- A panic inside a module's `Next` (a bad module's own bug) is recovered
+  and turned into an error result for that one target — it no longer
+  crashes the whole scan.
+- If a Worker disconnects mid-scan (crash, network partition, EC2
+  termination, ...), the coordinator doesn't retry or reassign its
+  unfinished targets to another Worker (this mirrors the "no dynamic
+  rebalancing" design of the shard push itself). Instead, once the
+  coordinator shuts down, it emits a synthetic error record for every
+  target that never got a real result, so that loss is visible in the
+  actual output rather than silent.
+
 ## Differences from the original
 
 - **Distributed mode** exists (see above) but, unlike the original's

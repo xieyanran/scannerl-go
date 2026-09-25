@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/xieyanran/scannerl-go/internal/fpmodule"
 	"github.com/xieyanran/scannerl-go/internal/output"
 	"github.com/xieyanran/scannerl-go/internal/rpc/scannerpb"
 	"github.com/xieyanran/scannerl-go/internal/target"
@@ -266,5 +267,151 @@ func TestReportResultsFeedsSharedSink(t *testing.T) {
 	}
 	if countA != 5 || countB != 7 {
 		t.Errorf("countA=%d countB=%d, want 5 and 7 (writes from concurrent streams both landed)", countA, countB)
+	}
+}
+
+func TestGetTargetsAbortsOnRegisterTimeout(t *testing.T) {
+	cfg := Config{
+		Workers:         3,
+		Source:          target.SourceConfig{Targets: []string{"10.0.0.1:80"}},
+		RegisterTimeout: 150 * time.Millisecond,
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	coord := New(context.Background(), cfg)
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- coord.Serve(ln) }()
+	t.Cleanup(coord.Stop)
+
+	// Connect only 1 of the 3 required workers.
+	stream, err := dial(t, ln.Addr().String()).GetTargets(context.Background(), &scannerpb.WorkerHello{WorkerId: "w1"})
+	if err != nil {
+		t.Fatalf("GetTargets: %v", err)
+	}
+
+	start := time.Now()
+	_, recvErr := stream.Recv()
+	elapsed := time.Since(start)
+
+	if recvErr == nil {
+		t.Fatal("expected an error once the register timeout elapsed, got nil")
+	}
+	if elapsed < cfg.RegisterTimeout {
+		t.Fatalf("GetTargets returned after %v, before the %v register timeout even elapsed", elapsed, cfg.RegisterTimeout)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("GetTargets took %v to return after the register timeout, want promptly", elapsed)
+	}
+
+	select {
+	case err := <-serveErr:
+		if err == nil {
+			t.Fatal("Serve returned nil, want an error explaining the aborted rendezvous")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after the register timeout aborted the coordinator")
+	}
+}
+
+func TestGetTargetsSucceedsWithinRegisterTimeout(t *testing.T) {
+	cfg := Config{
+		Workers:         2,
+		Source:          target.SourceConfig{Targets: []string{"10.0.0.1:80", "10.0.0.2:80"}},
+		RegisterTimeout: 2 * time.Second,
+	}
+	addr, _ := startCoordinator(t, cfg)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			stream, err := dial(t, addr).GetTargets(context.Background(), &scannerpb.WorkerHello{WorkerId: "w"})
+			if err != nil {
+				t.Errorf("GetTargets: %v", err)
+				return
+			}
+			for {
+				_, err := stream.Recv()
+				if err == io.EOF {
+					return
+				}
+				if err != nil {
+					t.Errorf("Recv: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	waitOrTimeout(t, &wg, 2*time.Second)
+}
+
+// TestReportUnresolvedSurfacesUnfinishedTargets simulates a worker
+// crashing partway through its shard: it reports one of its three
+// targets, then its ReportResults stream closes without reporting the
+// other two. ReportUnresolved should surface exactly those two as
+// synthetic ErrUnknown records in the shared output, rather than letting
+// them silently disappear.
+func TestReportUnresolvedSurfacesUnfinishedTargets(t *testing.T) {
+	rec := &recordingOutput{}
+	sink := output.NewSink([]output.Output{rec}, 0)
+	cfg := Config{
+		Workers: 1,
+		Source:  target.SourceConfig{Targets: []string{"10.0.0.1:80", "10.0.0.2:80", "10.0.0.3:80"}},
+		Sink:    sink,
+	}
+	addr, coord := startCoordinator(t, cfg)
+
+	// Connect the 1 required worker so the rendezvous completes and
+	// shards (hence coord.pending) get computed. Draining GetTargets
+	// itself isn't needed for this test.
+	if _, err := dial(t, addr).GetTargets(context.Background(), &scannerpb.WorkerHello{WorkerId: "w1"}); err != nil {
+		t.Fatalf("GetTargets: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond) // let the rendezvous complete and populate pending
+
+	stream, err := dial(t, addr).ReportResults(context.Background())
+	if err != nil {
+		t.Fatalf("ReportResults: %v", err)
+	}
+	if err := stream.Send(&scannerpb.Result{
+		Module: "test", Target: "10.0.0.1", Port: 80,
+		Outcome: scannerpb.Outcome_OUTCOME_OK, ValueJson: `"ok"`,
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if _, err := stream.CloseAndRecv(); err != nil {
+		t.Fatalf("CloseAndRecv: %v", err)
+	}
+
+	coord.ReportUnresolved()
+	if errs := sink.Close(); len(errs) != 0 {
+		t.Fatalf("sink.Close: %v", errs)
+	}
+
+	writes := rec.snapshot()
+	if len(writes) != 3 {
+		t.Fatalf("got %d records, want 3 (1 real + 2 unresolved): %+v", len(writes), writes)
+	}
+	var ok, unresolved int
+	unresolvedTargets := map[string]bool{}
+	for _, w := range writes {
+		switch w.Result.Outcome {
+		case fpmodule.OKOutcome:
+			ok++
+		case fpmodule.ErrUnknownOutcome:
+			unresolved++
+			unresolvedTargets[fmt.Sprintf("%s:%d", w.Target, w.Port)] = true
+		}
+	}
+	if ok != 1 || unresolved != 2 {
+		t.Fatalf("got %d ok + %d unresolved records, want 1 ok + 2 unresolved", ok, unresolved)
+	}
+	for _, want := range []string{"10.0.0.2:80", "10.0.0.3:80"} {
+		if !unresolvedTargets[want] {
+			t.Errorf("expected %s to be reported unresolved; got %v", want, unresolvedTargets)
+		}
 	}
 }

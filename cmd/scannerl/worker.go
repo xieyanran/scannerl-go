@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/xieyanran/scannerl-go/internal/engine"
 	"github.com/xieyanran/scannerl-go/internal/fpmodule"
@@ -17,7 +18,7 @@ import (
 // streams every result back over gRPC instead of writing to a local
 // output -- this is almost a line-for-line match of runSingleHost; only
 // where targets come from and where results go differ.
-func runWorker(ctx context.Context, mod fpmodule.Module, modCfg fpmodule.Config, moduleName, connectAddr, workerID string, workers int) error {
+func runWorker(ctx context.Context, mod fpmodule.Module, modCfg fpmodule.Config, moduleName, connectAddr, workerID string, workers, connectRetries int, connectBackoff time.Duration) error {
 	wc, err := worker.Dial(connectAddr)
 	if err != nil {
 		return err
@@ -43,12 +44,14 @@ func runWorker(ctx context.Context, mod fpmodule.Module, modCfg fpmodule.Config,
 	sink := output.NewSink([]output.Output{out}, 0)
 
 	eng := engine.New(engine.Config{
-		Module:     mod,
-		ModuleName: moduleName,
-		Transport:  modCfg.Transport,
-		Timeout:    modCfg.Timeout,
-		MaxPkt:     modCfg.MaxPkt,
-		Workers:    workers,
+		Module:         mod,
+		ModuleName:     moduleName,
+		Transport:      modCfg.Transport,
+		Timeout:        modCfg.Timeout,
+		MaxPkt:         modCfg.MaxPkt,
+		Workers:        workers,
+		ConnectRetries: connectRetries,
+		ConnectBackoff: connectBackoff,
 	}, sink)
 
 	eng.Run(ctx, targets)
