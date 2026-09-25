@@ -84,6 +84,63 @@ func TestRunNeverExceedsWorkerCount(t *testing.T) {
 	}
 }
 
+// TestRunContinuesAfterModulePanic proves a panic inside one target's
+// Module.Next doesn't crash the process or the worker pool: the panicking
+// target still produces an ErrUnknown record, and every other target on
+// the channel still gets probed normally.
+func TestRunContinuesAfterModulePanic(t *testing.T) {
+	addr, _ := startTCPServer(t, holdOpenHandler)
+	host, port := hostPort(t, addr)
+
+	var calls atomic.Int32
+	mod := scriptModule{fn: func(in fpmodule.Input) fpmodule.Step {
+		if calls.Add(1) == 1 {
+			panic("boom: simulated bad module")
+		}
+		return fpmodule.OK("fine")
+	}}
+
+	rec := &recordingOutput{}
+	sink := output.NewSink([]output.Output{rec}, 0)
+	e := New(Config{Module: mod, ModuleName: "test", Timeout: time.Second, Workers: 1}, sink)
+
+	const numTargets = 4
+	targets := make(chan target.Target, numTargets)
+	for i := 0; i < numTargets; i++ {
+		targets <- target.Target{Host: host, Port: port}
+	}
+	close(targets)
+
+	done := make(chan struct{})
+	go func() {
+		e.Run(context.Background(), targets)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return; a panic may have crashed a worker goroutine instead of being recovered")
+	}
+	sink.Close()
+
+	if len(rec.writes) != numTargets {
+		t.Fatalf("got %d records, want %d (a panicking target should still produce a record, and other targets should still be processed)", len(rec.writes), numTargets)
+	}
+	var panicked, ok int
+	for _, w := range rec.writes {
+		switch w.Result.Outcome {
+		case fpmodule.ErrUnknownOutcome:
+			panicked++
+		case fpmodule.OKOutcome:
+			ok++
+		}
+	}
+	if panicked != 1 || ok != numTargets-1 {
+		t.Fatalf("got %d panicked + %d ok records, want 1 panicked + %d ok", panicked, ok, numTargets-1)
+	}
+}
+
 func TestRunStopsPromptlyOnContextCancellation(t *testing.T) {
 	addr, _ := startTCPServer(t, holdOpenHandler)
 	host, port := hostPort(t, addr)

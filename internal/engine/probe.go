@@ -3,6 +3,9 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"runtime/debug"
 	"syscall"
 
 	"github.com/xieyanran/scannerl-go/internal/fpmodule"
@@ -53,7 +56,7 @@ func (e *Engine) probeOne(ctx context.Context, t target.Target) output.Record {
 		var packetRcv int
 
 		for { // callback loop, driven by Module.Next
-			step := e.cfg.Module.Next(fpmodule.Input{
+			step := e.safeNext(fpmodule.Input{
 				Target:    ctarget,
 				IP:        ip,
 				Port:      cport,
@@ -93,6 +96,24 @@ func (e *Engine) probeOne(ctx context.Context, t target.Target) output.Record {
 		}
 	reconnect:
 	}
+}
+
+// safeNext calls cfg.Module.Next, recovering from any panic (nil deref,
+// index out of range, a bad module's own bug, ...) and converting it
+// into an ErrUnknown Result for this one target instead of letting it
+// propagate. Go's default panic semantics crash the entire process, not
+// just the offending goroutine, so without this, one bad
+// target/module combination would take down every other in-flight and
+// already-completed-but-not-yet-flushed result along with it.
+func (e *Engine) safeNext(in fpmodule.Input) (step fpmodule.Step) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "engine: recovered panic in %s.Next for %s:%d: %v\n%s",
+				e.cfg.ModuleName, in.Target, in.Port, r, debug.Stack())
+			step = fpmodule.ErrUnknown(fmt.Sprintf("panic in module: %v", r))
+		}
+	}()
+	return e.cfg.Module.Next(in)
 }
 
 func (e *Engine) record(t target.Target, res fpmodule.Result) output.Record {

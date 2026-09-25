@@ -253,6 +253,25 @@ func TestProbeOneTooManyPacketsIsHardStop(t *testing.T) {
 	}
 }
 
+func TestProbeOneRecoversFromPanicInModuleNext(t *testing.T) {
+	addr, _ := startTCPServer(t, holdOpenHandler)
+	host, port := hostPort(t, addr)
+
+	mod := scriptModule{fn: func(in fpmodule.Input) fpmodule.Step {
+		panic("boom: simulated bad module")
+	}}
+
+	e := newTestEngine(Config{Module: mod, ModuleName: "test"})
+	rec := e.probeOne(context.Background(), target.Target{Host: host, Port: port})
+
+	if rec.Result.Outcome != fpmodule.ErrUnknownOutcome {
+		t.Fatalf("got %+v, want ErrUnknown outcome after a recovered panic", rec)
+	}
+	if rec.Target != host || rec.Port != port {
+		t.Fatalf("record target/port = %s:%d, want %s:%d", rec.Target, rec.Port, host, port)
+	}
+}
+
 func TestProbeOneConnectionRefused(t *testing.T) {
 	// Bind and immediately close to get a port nothing is listening on.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
