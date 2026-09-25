@@ -46,7 +46,7 @@ func (e *Engine) probeOne(ctx context.Context, t target.Target) output.Record {
 			return e.record(t, fpmodule.ErrUnknown("cancelled").Result)
 		}
 
-		conn, ip, err := e.dial(ctx, ctarget, cport)
+		conn, ip, err := e.dialWithRetry(ctx, ctarget, cport)
 		if err != nil {
 			return e.record(t, classifyConnectErr(err))
 		}

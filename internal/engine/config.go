@@ -26,6 +26,18 @@ type Config struct {
 	MaxPkt    int
 	Retry     int
 
+	// ConnectRetries bounds extra CONNECT-step attempts after the first
+	// dial failure, separate from Retry (which only governs resending
+	// within an already-established connection -- the CONNECT step
+	// itself is never retried by Retry). 0 disables connect retry,
+	// preserving the original "one dial attempt, then classify and
+	// give up" behavior.
+	ConnectRetries int
+	// ConnectBackoff is the delay before the first connect retry,
+	// doubling on each subsequent attempt. Ignored if ConnectRetries
+	// is 0.
+	ConnectBackoff time.Duration
+
 	Workers   int
 	PrivPorts bool
 	WWW       bool

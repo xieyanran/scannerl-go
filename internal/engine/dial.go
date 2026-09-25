@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/xieyanran/scannerl-go/internal/fpmodule"
 )
@@ -56,6 +57,33 @@ func resolveOnce(ctx context.Context, host string) (netip.Addr, error) {
 		return netip.Addr{}, fmt.Errorf("engine: could not parse resolved address for %s", host)
 	}
 	return addr, nil
+}
+
+// dialWithRetry wraps dial with a bounded retry-with-backoff around the
+// CONNECT step, separate from Config.Retry (which only governs resending
+// within an already-established connection, never the dial itself). A
+// transient dial failure (momentary network blip, target briefly
+// overloaded) gets Config.ConnectRetries extra attempts, with the delay
+// between attempts starting at Config.ConnectBackoff and doubling each
+// time. Every dial error is retried uniformly (no attempt is made to
+// distinguish "transient" from "permanent" failures like ECONNREFUSED --
+// that classification happens afterward, in classifyConnectErr, once
+// retries are exhausted): a wrong guess about which errors are worth
+// retrying would either waste time on truly permanent failures or, worse,
+// give up early on a target that would have come up.
+func (e *Engine) dialWithRetry(ctx context.Context, host string, port int) (*liveConn, netip.Addr, error) {
+	conn, ip, err := e.dial(ctx, host, port)
+	backoff := e.cfg.ConnectBackoff
+	for attempt := 0; err != nil && attempt < e.cfg.ConnectRetries; attempt++ {
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return nil, ip, ctx.Err()
+		}
+		backoff *= 2
+		conn, ip, err = e.dial(ctx, host, port)
+	}
+	return conn, ip, err
 }
 
 // dial resolves and connects to host:port per cfg, returning a live
