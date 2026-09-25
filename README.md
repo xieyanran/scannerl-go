@@ -15,7 +15,20 @@ elsewhere / done") but reimplements everything else idiomatically in Go. See
 
 ## Modules
 
-_Fingerprinting and output module tables will be filled in as each module lands._
+Fingerprint modules (`-m`), listed via `scannerl -l`:
+
+| Module | Protocol | Default port | Description | Arguments |
+| --- | --- | --- | --- | --- |
+| `tcpbanner` | TCP | none — specify per target (e.g. `-i host:port`) | grabs the first bytes a TCP service sends unprompted, without sending anything | none |
+| `http` | TCP | 80 | sends a GET / request and returns the HTTP status line and headers | none |
+| `https_certif` | SSL/TLS | 443 | performs a TLS handshake (certificate validation disabled) and returns the peer certificate's subject, issuer, validity window and DNS SANs | none |
+
+Outputs (`-o`), listed via `scannerl -l`:
+
+| Output | Description | Arguments |
+| --- | --- | --- |
+| `stdout` | prints one line per result to stdout | none |
+| `json` | prints one JSON object per result to stdout (JSON-lines) | none |
 
 ## Differences from the original
 
